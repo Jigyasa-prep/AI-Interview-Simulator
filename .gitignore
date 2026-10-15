@@ -1,0 +1,17 @@
+# Dependency folders
+node_modules/
+*/node_modules/
+
+# Environment files (API Keys protect karne ke liye)
+.env
+*/.env
+.env.local
+
+# Build output
+dist/
+build/
+
+# System files
+.DS_Store
+Thumbs.db
+.env
