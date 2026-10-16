@@ -1,5 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+
+// Browser SpeechRecognition compatibility helper
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
 
 function App() {
   const [mode, setMode] = useState('role');
@@ -22,6 +26,67 @@ function App() {
   const [resumeContext, setResumeContext] = useState('');
   const [history, setHistory] = useState([]);
   const [finalReport, setFinalReport] = useState(null);
+
+  // --- Voice Features State ---
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
+
+  // Initialize Speech-to-Text
+  useEffect(() => {
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        setUserAnswer((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      };
+
+      recognition.onerror = (err) => {
+        console.error('Speech recognition error:', err);
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
+  // AI Text-to-Speech (Speaker) Function
+  const speakText = (text) => {
+    if (!voiceEnabled || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel(); // Purani aawaz stop karein
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.lang = 'en-US';
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Mic Toggle
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      alert('Aapka browser Speech Recognition support nahi karta. Chrome use karein.');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      recognitionRef.current.start();
+      setIsListening(true);
+    }
+  };
 
   // 1. Start Interview
   const handleStartInterview = async (e) => {
@@ -58,6 +123,9 @@ function App() {
         setResumeContext(response.data.resumeContext || '');
         setHistory([{ role: 'interviewer', content: response.data.question }]);
         setInterviewStarted(true);
+
+        // AI sawal bolega
+        speakText(`${response.data.intro}. First question: ${response.data.question}`);
       }
     } catch (err) {
       console.error(err);
@@ -67,11 +135,16 @@ function App() {
     }
   };
 
-  // 2. Submit Answer & Check Question Limit
+  // 2. Submit Answer
   const handleSubmitAnswer = async () => {
     if (!userAnswer.trim()) {
-      alert('Kripya apna answer likhein.');
+      alert('Kripya apna answer bol kar ya likh kar submit karein.');
       return;
+    }
+
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
     }
 
     setLoading(true);
@@ -97,12 +170,13 @@ function App() {
       setHistory(updatedHistory);
       setUserAnswer('');
 
-      // Agar max questions complete ho chuke hain, toh report trigger karein
       if (questionCount >= MAX_QUESTIONS) {
         generateFinalReport(updatedHistory, updatedScores);
       } else {
         setQuestionCount((prev) => prev + 1);
         setCurrentQuestion(res.data.nextQuestion);
+        // AI agla question bolega
+        speakText(`Feedback: ${res.data.feedback}. Next question: ${res.data.nextQuestion}`);
       }
     } catch (err) {
       console.error(err);
@@ -114,6 +188,7 @@ function App() {
 
   // 3. Generate Final Report
   const generateFinalReport = async (chatHistory = history, currentScores = scores) => {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
     setLoading(true);
     try {
       const res = await axios.post('http://localhost:5000/api/interview/report', {
@@ -124,6 +199,7 @@ function App() {
       });
       setFinalReport(res.data);
       setInterviewFinished(true);
+      speakText(`Interview completed. Your overall score is ${res.data.overallScore} out of 10.`);
     } catch (err) {
       console.error(err);
       alert('Report generate nahi ho payi.');
@@ -134,6 +210,7 @@ function App() {
 
   // 4. Reset & Restart
   const handleReset = () => {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
     setInterviewStarted(false);
     setInterviewFinished(false);
     setFinalReport(null);
@@ -143,17 +220,45 @@ function App() {
   };
 
   return (
-    <div style={{ maxWidth: '750px', margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px' }}>
-      <h1 style={{ textAlign: 'center', color: '#2563eb', marginBottom: '8px' }}>AI Mock Interviewer</h1>
-      <p style={{ textAlign: 'center', color: '#64748b', marginBottom: '30px' }}>AI-Powered Realtime Technical Assessment</p>
+    <div style={{ maxWidth: '760px', margin: '30px auto', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '20px' }}>
+      {/* Top Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div>
+          <h1 style={{ color: '#2563eb', margin: '0 0 4px 0', fontSize: '28px' }}>AI Mock Interviewer</h1>
+          <p style={{ color: '#64748b', margin: 0, fontSize: '14px' }}>Real-Time Role & Resume Technical Screener</p>
+        </div>
+
+        {/* Voice Toggle Switch */}
+        <button
+          onClick={() => {
+            if (voiceEnabled && window.speechSynthesis) window.speechSynthesis.cancel();
+            setVoiceEnabled(!voiceEnabled);
+          }}
+          style={{
+            padding: '8px 14px',
+            borderRadius: '20px',
+            border: '1px solid #cbd5e1',
+            background: voiceEnabled ? '#ecfdf5' : '#f1f5f9',
+            color: voiceEnabled ? '#059669' : '#64748b',
+            cursor: 'pointer',
+            fontSize: '13px',
+            fontWeight: '600',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          {voiceEnabled ? '🔊 AI Voice: ON' : '🔇 AI Voice: OFF'}
+        </button>
+      </div>
 
       {/* Screen 1: Setup */}
       {!interviewStarted && !interviewFinished && (
         <div style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '24px', background: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
-          <h3 style={{ marginTop: 0 }}>Interview Configuration</h3>
+          <h3 style={{ marginTop: 0 }}>Configure Interview</h3>
           
           <div style={{ marginBottom: '18px' }}>
-            <span style={{ marginRight: '16px', fontWeight: '600' }}>Select Mode:</span>
+            <span style={{ marginRight: '16px', fontWeight: '600' }}>Select Track:</span>
             <label style={{ marginRight: '16px', cursor: 'pointer' }}>
               <input type="radio" value="role" checked={mode === 'role'} onChange={() => setMode('role')} /> Role Wise
             </label>
@@ -165,7 +270,7 @@ function App() {
           {mode === 'role' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500' }}>Target Job Role:</label>
+                <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500' }}>Target Role:</label>
                 <input
                   type="text"
                   value={role}
@@ -181,9 +286,9 @@ function App() {
                   onChange={(e) => setExperienceLevel(e.target.value)}
                   style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}
                 >
-                  <option value="Fresher">Fresher (0 years)</option>
-                  <option value="Junior (1-2 years)">Junior (1-2 years)</option>
-                  <option value="Mid-Level (3-5 years)">Mid-Level (3-5 years)</option>
+                  <option value="Fresher">Fresher (0-1 yrs)</option>
+                  <option value="Junior (1-2 years)">Junior (1-2 yrs)</option>
+                  <option value="Mid-Level (3-5 years)">Mid-Level (3-5 yrs)</option>
                 </select>
               </div>
             </div>
@@ -207,20 +312,19 @@ function App() {
               borderRadius: '8px',
               fontSize: '16px',
               fontWeight: '600',
-              cursor: loading ? 'not-allowed' : 'pointer'
+              cursor: loading ? 'not-allowed' : 'pointer',
             }}
           >
-            {loading ? 'Initializing Interview...' : 'Start Interview'}
+            {loading ? 'Starting Interview...' : 'Start Interview'}
           </button>
         </div>
       )}
 
-      {/* Screen 2: Active Q&A Session */}
+      {/* Screen 2: Active Interview */}
       {interviewStarted && !interviewFinished && (
         <div>
-          {/* Header Bar */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <span style={{ fontSize: '14px', fontWeight: '600', color: '#475569', background: '#f1f5f9', padding: '6px 12px', borderRadius: '20px' }}>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: '#475569', background: '#f1f5f9', padding: '6px 12px', borderRadius: '20px' }}>
               Question {questionCount} of {MAX_QUESTIONS}
             </span>
             <button
@@ -233,31 +337,75 @@ function App() {
           </div>
 
           {intro && (
-            <div style={{ backgroundColor: '#eff6ff', border: '1px solid #bfdbfe', padding: '12px 16px', borderRadius: '8px', marginBottom: '16px' }}>
+            <div style={{ backgroundColor: '#eff6ff', border: '1px solid #bfdbfe', padding: '12px 16px', borderRadius: '8px', marginBottom: '16px', fontSize: '14px' }}>
               <strong>AI Greeting:</strong> {intro}
             </div>
           )}
 
           <div style={{ border: '1px solid #cbd5e1', borderRadius: '10px', padding: '18px', background: '#fff', marginBottom: '16px' }}>
-            <h4 style={{ margin: '0 0 8px 0', color: '#64748b', textTransform: 'uppercase', fontSize: '12px', letterSpacing: '0.05em' }}>Question {questionCount}</h4>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ color: '#64748b', textTransform: 'uppercase', fontSize: '12px', fontWeight: 'bold' }}>Question {questionCount}</span>
+              <button
+                onClick={() => speakText(currentQuestion)}
+                style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}
+              >
+                🔊 Repeat Question
+              </button>
+            </div>
             <p style={{ fontSize: '18px', color: '#1e293b', fontWeight: '500', margin: 0 }}>{currentQuestion}</p>
           </div>
 
           {feedback && (
             <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', padding: '14px', borderRadius: '8px', marginBottom: '16px' }}>
-              <p style={{ margin: '0 0 6px 0', color: '#166534', fontWeight: '600' }}>Last Answer Score: {feedback.score} / 10</p>
+              <p style={{ margin: '0 0 6px 0', color: '#166534', fontWeight: '600' }}>Score: {feedback.score} / 10</p>
               <p style={{ margin: 0, color: '#15803d', fontSize: '14px' }}><strong>Feedback:</strong> {feedback.feedback}</p>
             </div>
           )}
 
+          {/* Answer Box + Mic Controls */}
           <div>
-            <textarea
-              rows="4"
-              value={userAnswer}
-              onChange={(e) => setUserAnswer(e.target.value)}
-              placeholder="Type your technical response here..."
-              style={{ width: '100%', padding: '12px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '15px' }}
-            />
+            <div style={{ position: 'relative' }}>
+              <textarea
+                rows="4"
+                value={userAnswer}
+                onChange={(e) => setUserAnswer(e.target.value)}
+                placeholder="Type your answer, or click the mic button to speak..."
+                style={{ width: '100%', padding: '12px', paddingRight: '50px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '15px' }}
+              />
+              
+              {/* Mic Button inside text box */}
+              <button
+                onClick={toggleListening}
+                type="button"
+                style={{
+                  position: 'absolute',
+                  right: '12px',
+                  top: '12px',
+                  background: isListening ? '#ef4444' : '#f1f5f9',
+                  color: isListening ? 'white' : '#334155',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '50%',
+                  width: '38px',
+                  height: '38px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '18px',
+                  animation: isListening ? 'pulse 1.5s infinite' : 'none'
+                }}
+                title={isListening ? 'Stop Speaking' : 'Start Speaking'}
+              >
+                {isListening ? '🛑' : '🎤'}
+              </button>
+            </div>
+
+            {isListening && (
+              <p style={{ color: '#ef4444', fontSize: '13px', marginTop: '6px', fontWeight: '500' }}>
+                ● Mic active: Listening to your response...
+              </p>
+            )}
+
             <button
               onClick={handleSubmitAnswer}
               disabled={loading}
@@ -279,7 +427,7 @@ function App() {
         </div>
       )}
 
-      {/* Screen 3: Final Scorecard & Performance Report */}
+      {/* Screen 3: Final Scorecard */}
       {interviewFinished && finalReport && (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '28px', boxShadow: '0 4px 14px rgba(0,0,0,0.06)' }}>
           <div style={{ textAlign: 'center', marginBottom: '24px' }}>

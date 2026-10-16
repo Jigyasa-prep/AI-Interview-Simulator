@@ -8,7 +8,7 @@ require('dotenv').config();
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Reliable PDF text extraction function
+// PDF Buffer Parser
 function parsePDFBuffer(buffer) {
   return new Promise((resolve, reject) => {
     const pdfParser = new PDFParser(null, 1);
@@ -25,25 +25,41 @@ function parsePDFBuffer(buffer) {
   });
 }
 
-// 503 High Demand handle karne ke liye auto-fallback helper
+// Sleep helper function for automatic retry
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// High-demand resilient generation with automatic retry and model fallback
 async function generateWithFallback(contents) {
-  // Agar ek model busy ho, toh list me agla try karega
-  const models = ['gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+  // Stable multi-tier model list
+  const models = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-3.8-flash'
+  ];
 
   let lastError;
+
   for (const model of models) {
-    try {
-      const response = await ai.models.generateContent({
-        model: model,
-        contents: contents,
-        config: { responseMimeType: 'application/json' }
-      });
-      return response;
-    } catch (err) {
-      lastError = err;
-      console.warn(`Model ${model} busy/failed (status: ${err?.status || err?.code}), trying fallback...`);
+    // Har model ko 2 attempts denge with a tiny delay
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: model,
+          contents: contents,
+          config: { responseMimeType: 'application/json' }
+        });
+        return response;
+      } catch (err) {
+        lastError = err;
+        console.warn(`Model ${model} attempt ${attempt} failed: ${err.message || err.status}`);
+        if (attempt < 2) {
+          await wait(1200); // 1.2s wait before retrying same model
+        }
+      }
     }
   }
+
   throw lastError;
 }
 
@@ -58,15 +74,15 @@ router.post('/start', upload.single('resume'), async (req, res) => {
       try {
         resumeText = await parsePDFBuffer(req.file.buffer);
       } catch (parseErr) {
-        console.warn('PDF read issue, using fallback text:', parseErr);
+        console.warn('PDF read fallback:', parseErr);
         resumeText = 'General Software Developer Profile';
       }
 
-      promptIntro = `You are an interviewer conducting a technical interview based on this candidate's resume summary:
+      promptIntro = `You are a technical interviewer interviewing a candidate based on their resume summary:
 "${resumeText}"
-Give a 1-sentence polite greeting acknowledging their profile, and then ask the very first interview question based on their technical skills or projects.`;
+Give a 1-sentence friendly greeting and ask the first question based on their listed skills or projects.`;
     } else {
-      promptIntro = `You are a technical interviewer interviewing for the role "${role || 'Software Developer'}" with experience level "${experienceLevel || 'Fresher'}". Start with 1 short greeting and ask the first core conceptual question.`;
+      promptIntro = `You are an interviewer interviewing for "${role || 'Frontend Developer'}" at "${experienceLevel || 'Fresher'}" level. Give 1 short greeting and ask the first conceptual question.`;
     }
 
     const prompt = `${promptIntro}\nReturn JSON strictly with format:\n{\n  "intro": "greeting",\n  "question": "first question"\n}`;
@@ -80,8 +96,8 @@ Give a 1-sentence polite greeting acknowledging their profile, and then ask the 
       question: data.question
     });
   } catch (err) {
-    console.error("Backend Error Detail:", err);
-    res.status(500).json({ error: 'AI server par abhi high demand hai. Kripya 5 second baad dobara try karein.' });
+    console.error("Final Server Error:", err);
+    res.status(500).json({ error: 'AI server busy hai. Kripya 2-3 second ruk kar dobara click karein.' });
   }
 });
 
@@ -97,7 +113,7 @@ router.post('/evaluate', async (req, res) => {
       Candidate Answer: "${userAnswer}"
       
       Tasks:
-      1. Give short feedback (1-2 sentences) and score out of 10.
+      1. Give brief feedback (1-2 sentences) and score out of 10.
       2. Ask the next question.
       
       Return JSON strictly:
@@ -111,12 +127,12 @@ router.post('/evaluate', async (req, res) => {
     const response = await generateWithFallback(prompt);
     res.json(JSON.parse(response.text));
   } catch (err) {
-    console.error("Backend Error Detail:", err);
-    res.status(500).json({ error: 'Evaluation me problem aayi.' });
+    console.error("Evaluation Error:", err);
+    res.status(500).json({ error: 'Evaluation me issue aaya, dobara submit karein.' });
   }
 });
 
-// Route 3: Final Interview Report / Summary
+// Route 3: Final Report
 router.post('/report', async (req, res) => {
   try {
     const { mode, role, history, scores } = req.body;
@@ -126,8 +142,7 @@ router.post('/report', async (req, res) => {
       Context: ${mode === 'resume' ? 'Resume-based Interview' : `Role: ${role}`}
       Complete Transcript & Q&A History:
       ${JSON.stringify(history)}
-
-      Individual Answer Scores given during the session: ${JSON.stringify(scores || [])}
+      Scores: ${JSON.stringify(scores || [])}
 
       Generate an end-of-interview report.
       Return JSON strictly in this structure:
