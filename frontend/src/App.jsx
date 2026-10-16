@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { jsPDF } from 'jspdf';
 
 // Browser SpeechRecognition compatibility helper
 const SpeechRecognition =
@@ -31,6 +32,9 @@ function App() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef(null);
+
+  // Base API URL (Deployment ke waqt environment variable se connect hoga)
+  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
   // Initialize Speech-to-Text
   useEffect(() => {
@@ -64,7 +68,7 @@ function App() {
   // AI Text-to-Speech (Speaker) Function
   const speakText = (text) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel(); // Purani aawaz stop karein
+    window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
     utterance.pitch = 1.0;
@@ -113,7 +117,7 @@ function App() {
     }
 
     try {
-      const response = await axios.post('http://localhost:5000/api/interview/start', formData, {
+      const response = await axios.post(`${API_BASE_URL}/api/interview/start`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
@@ -123,8 +127,6 @@ function App() {
         setResumeContext(response.data.resumeContext || '');
         setHistory([{ role: 'interviewer', content: response.data.question }]);
         setInterviewStarted(true);
-
-        // AI sawal bolega
         speakText(`${response.data.intro}. First question: ${response.data.question}`);
       }
     } catch (err) {
@@ -157,7 +159,7 @@ function App() {
         userAnswer,
       };
 
-      const res = await axios.post('http://localhost:5000/api/interview/evaluate', payload);
+      const res = await axios.post(`${API_BASE_URL}/api/interview/evaluate`, payload);
       setFeedback(res.data);
       const updatedScores = [...scores, res.data.score];
       setScores(updatedScores);
@@ -175,7 +177,6 @@ function App() {
       } else {
         setQuestionCount((prev) => prev + 1);
         setCurrentQuestion(res.data.nextQuestion);
-        // AI agla question bolega
         speakText(`Feedback: ${res.data.feedback}. Next question: ${res.data.nextQuestion}`);
       }
     } catch (err) {
@@ -191,7 +192,7 @@ function App() {
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     setLoading(true);
     try {
-      const res = await axios.post('http://localhost:5000/api/interview/report', {
+      const res = await axios.post(`${API_BASE_URL}/api/interview/report`, {
         mode,
         role,
         history: chatHistory,
@@ -208,7 +209,89 @@ function App() {
     }
   };
 
-  // 4. Reset & Restart
+  // 4. Download PDF Function
+  const downloadPDFReport = () => {
+    if (!finalReport) return;
+
+    const doc = new jsPDF();
+    const margin = 20;
+    let y = 20;
+
+    // Title
+    doc.setFontSize(20);
+    doc.setTextColor(37, 99, 235);
+    doc.text('AI Mock Interview Report', margin, y);
+    y += 10;
+
+    // Subtitle / Details
+    doc.setFontSize(11);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Track: ${mode === 'resume' ? 'Resume-Based' : `Role: ${role} (${experienceLevel})`}`, margin, y);
+    y += 6;
+    doc.text(`Date: ${new Date().toLocaleDateString()}`, margin, y);
+    y += 12;
+
+    // Overall Score
+    doc.setFontSize(16);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Overall Score: ${finalReport.overallScore} / 10`, margin, y);
+    y += 12;
+
+    // Executive Summary
+    doc.setFontSize(13);
+    doc.setTextColor(30, 41, 59);
+    doc.text('Executive Summary:', margin, y);
+    y += 6;
+    doc.setFontSize(10);
+    doc.setTextColor(71, 85, 105);
+    const splitSummary = doc.splitTextToSize(finalReport.summary || '', 170);
+    doc.text(splitSummary, margin, y);
+    y += splitSummary.length * 6 + 6;
+
+    // Key Strengths
+    doc.setFontSize(13);
+    doc.setTextColor(22, 101, 52);
+    doc.text('Key Strengths:', margin, y);
+    y += 6;
+    doc.setFontSize(10);
+    doc.setTextColor(51, 65, 85);
+    finalReport.strengths?.forEach((item) => {
+      const splitItem = doc.splitTextToSize(`• ${item}`, 165);
+      doc.text(splitItem, margin + 4, y);
+      y += splitItem.length * 5 + 2;
+    });
+    y += 6;
+
+    // Areas for Improvement
+    doc.setFontSize(13);
+    doc.setTextColor(153, 27, 27);
+    doc.text('Areas for Improvement:', margin, y);
+    y += 6;
+    doc.setFontSize(10);
+    doc.setTextColor(51, 65, 85);
+    finalReport.areasForImprovement?.forEach((item) => {
+      const splitItem = doc.splitTextToSize(`• ${item}`, 165);
+      doc.text(splitItem, margin + 4, y);
+      y += splitItem.length * 5 + 2;
+    });
+    y += 6;
+
+    // Recommendations
+    if (finalReport.keyRecommendations) {
+      doc.setFontSize(13);
+      doc.setTextColor(134, 25, 143);
+      doc.text('Key Recommendations:', margin, y);
+      y += 6;
+      doc.setFontSize(10);
+      doc.setTextColor(71, 85, 105);
+      const splitRec = doc.splitTextToSize(finalReport.keyRecommendations, 170);
+      doc.text(splitRec, margin, y);
+    }
+
+    doc.save(`Interview_Report_${Date.now()}.pdf`);
+  };
+
+  // 5. Reset & Restart
   const handleReset = () => {
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     setInterviewStarted(false);
@@ -221,14 +304,12 @@ function App() {
 
   return (
     <div style={{ maxWidth: '760px', margin: '30px auto', fontFamily: 'system-ui, -apple-system, sans-serif', padding: '20px' }}>
-      {/* Top Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div>
           <h1 style={{ color: '#2563eb', margin: '0 0 4px 0', fontSize: '28px' }}>AI Mock Interviewer</h1>
           <p style={{ color: '#64748b', margin: 0, fontSize: '14px' }}>Real-Time Role & Resume Technical Screener</p>
         </div>
 
-        {/* Voice Toggle Switch */}
         <button
           onClick={() => {
             if (voiceEnabled && window.speechSynthesis) window.speechSynthesis.cancel();
@@ -362,7 +443,6 @@ function App() {
             </div>
           )}
 
-          {/* Answer Box + Mic Controls */}
           <div>
             <div style={{ position: 'relative' }}>
               <textarea
@@ -373,7 +453,6 @@ function App() {
                 style={{ width: '100%', padding: '12px', paddingRight: '50px', boxSizing: 'border-box', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '15px' }}
               />
               
-              {/* Mic Button inside text box */}
               <button
                 onClick={toggleListening}
                 type="button"
@@ -391,8 +470,7 @@ function App() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  fontSize: '18px',
-                  animation: isListening ? 'pulse 1.5s infinite' : 'none'
+                  fontSize: '18px'
                 }}
                 title={isListening ? 'Stop Speaking' : 'Start Speaking'}
               >
@@ -427,7 +505,7 @@ function App() {
         </div>
       )}
 
-      {/* Screen 3: Final Scorecard */}
+      {/* Screen 3: Final Scorecard & PDF Download */}
       {interviewFinished && finalReport && (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '28px', boxShadow: '0 4px 14px rgba(0,0,0,0.06)' }}>
           <div style={{ textAlign: 'center', marginBottom: '24px' }}>
@@ -463,12 +541,42 @@ function App() {
             <p style={{ color: '#701a75', margin: 0, fontSize: '14px' }}>{finalReport.keyRecommendations}</p>
           </div>
 
-          <button
-            onClick={handleReset}
-            style={{ width: '100%', padding: '12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: '600', cursor: 'pointer' }}
-          >
-            Start New Interview
-          </button>
+          {/* Action Buttons */}
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button
+              onClick={downloadPDFReport}
+              style={{
+                flex: 1,
+                padding: '12px',
+                background: '#059669',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '15px',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              📥 Download Report (PDF)
+            </button>
+
+            <button
+              onClick={handleReset}
+              style={{
+                flex: 1,
+                padding: '12px',
+                background: '#2563eb',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '15px',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              Start New Interview
+            </button>
+          </div>
         </div>
       )}
     </div>
